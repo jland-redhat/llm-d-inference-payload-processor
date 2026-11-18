@@ -57,6 +57,15 @@ func NewDefaultExtProcServerRunner(port int) *ExtProcServerRunner {
 // The runnable implements LeaderElectionRunnable with leader election disabled.
 func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 	return runnable.NoLeaderElection(manager.RunnableFunc(func(ctx context.Context) error {
+		// Per-message limit only (gRPC MaxRecvMsgSize). RHAI-13005 / RHAI-50090:
+		// Envoy delivers one body chunk larger than the limit → empty HTTP 500.
+		maxRecv, err := resolveGRPCMaxRecvMsgSize()
+		if err != nil {
+			return err
+		}
+		grpcOpts := []grpc.ServerOption{grpc.MaxRecvMsgSize(maxRecv)}
+		logger.Info("gRPC MaxRecvMsgSize configured", "bytes", maxRecv, "env", grpcMaxRecvMsgSizeEnv)
+
 		var srv *grpc.Server
 		if r.SecureServing {
 			cert, err := tlsutil.CreateSelfSignedTLSCertificate(logger)
@@ -67,9 +76,10 @@ func (r *ExtProcServerRunner) AsRunnable(logger logr.Logger) manager.Runnable {
 				Certificates: []tls.Certificate{cert},
 				NextProtos:   []string{"h2"},
 			})
-			srv = grpc.NewServer(grpc.Creds(creds))
+			grpcOpts = append(grpcOpts, grpc.Creds(creds))
+			srv = grpc.NewServer(grpcOpts...)
 		} else {
-			srv = grpc.NewServer()
+			srv = grpc.NewServer(grpcOpts...)
 		}
 
 		server := handlers.NewServer(r.PreProcessors, r.ProfilePicker, r.Profiles, r.PostProcessors, r.ResponseHeadersPostProcessors).WithEventNotifier(r.EventNotifier)
